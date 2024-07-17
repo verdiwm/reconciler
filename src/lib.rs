@@ -13,7 +13,7 @@ pin_project! {
     }
 }
 
-impl<T: Send + Sync + 'static> EventListener<T> {
+impl<T: Send + 'static> EventListener<T> {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel::<T>(100);
 
@@ -26,7 +26,7 @@ impl<T: Send + Sync + 'static> EventListener<T> {
 
     pub fn add_listener<S, E>(&mut self, stream: S)
     where
-        S: Stream<Item = E> + Send + Sync + 'static,
+        S: Stream<Item = E> + Send + 'static,
         E: Into<T>,
     {
         let sender = self.sender.clone();
