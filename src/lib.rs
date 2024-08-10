@@ -4,6 +4,8 @@ use tokio::{sync::mpsc, task::JoinSet};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::PollSender;
 
+pub mod handler;
+
 pin_project! {
     pub struct EventListener<T> {
         sender: PollSender<T>,
@@ -37,6 +39,8 @@ impl<T: Send + 'static> EventListener<T> {
             }
         });
     }
+
+    // TODO: add util functions for failable listeners
 }
 
 impl<T> Stream for EventListener<T> {
