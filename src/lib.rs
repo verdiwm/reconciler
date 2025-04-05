@@ -1,55 +1,77 @@
-use futures_util::{Stream, StreamExt};
-use pin_project_lite::pin_project;
-use tokio::{sync::mpsc, task::JoinSet};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::PollSender;
+use std::error::Error;
 
-pub mod handler;
+use futures_util::Stream;
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::StreamExt;
 
-pin_project! {
-    pub struct EventListener<T> {
-        sender: PollSender<T>,
-        #[pin]
-        receiver: ReceiverStream<T>,
-        streams: JoinSet<()>,
-    }
+/// Event priority
+///
+/// # Note
+///
+/// This is not actually used at the moment
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Priority {
+    Critical,
+    High,
+    Normal,
+    Low,
 }
 
-impl<T: Send + 'static> EventListener<T> {
+pub enum SourceError<E> {
+    // TODO: more variants
+    Source(E),
+}
+
+#[derive(Debug, Clone)]
+pub struct Event<T> {
+    source_id: String,
+    priority: Priority,
+    inner: T,
+}
+
+pub struct Manager<T, E> {
+    tx: mpsc::Sender<Event<T>>,
+    error_tx: mpsc::Sender<SourceError<E>>,
+    error_rx: Option<mpsc::Receiver<SourceError<E>>>,
+}
+
+impl<T: Send + 'static, E: Error + Send + 'static> Manager<T, E> {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel::<T>(100);
+        let (tx, rx) = mpsc::channel(100);
+        // let (broadcast, _) = broadcast::channel(broadcast_size);
+        let (error_tx, error_rx) = mpsc::channel(100);
 
         Self {
-            sender: PollSender::new(sender),
-            receiver: ReceiverStream::new(receiver),
-            streams: JoinSet::new(),
+            tx,
+            // rx: Some(rx),
+            // broadcast,
+            error_tx,
+            error_rx: Some(error_rx),
         }
     }
 
-    pub fn add_listener<S, E>(&mut self, stream: S)
+    pub fn add_source<S>(&self, source_id: String, stream: S)
     where
-        S: Stream<Item = E> + Send + 'static,
-        E: Into<T>,
+        S: Stream<Item = Result<Event<T>, SourceError<E>>> + Send + Unpin + 'static,
     {
-        let sender = self.sender.clone();
+        let tx = self.tx.clone();
+        let error_tx = self.error_tx.clone();
 
-        self.streams.spawn({
-            async move {
-                let _ = stream.map(|event| Ok(event.into())).forward(sender).await;
+        tokio::spawn(async move {
+            let mut stream = stream;
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(event) => {
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = error_tx.send(error).await;
+                    }
+                }
             }
         });
-    }
-
-    // TODO: add util functions for failable listeners
-}
-
-impl<T> Stream for EventListener<T> {
-    type Item = T;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.project().receiver.poll_next(cx)
     }
 }
